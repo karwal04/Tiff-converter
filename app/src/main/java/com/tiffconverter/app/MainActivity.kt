@@ -6,6 +6,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Color
+import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -39,33 +41,48 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvStatus: TextView
     private lateinit var layoutCompressionOptions: LinearLayout
 
-    private val selectedImages = mutableListOf<Uri>()
+    // Pair<Uri, isPdf>
+    private val selectedItems = mutableListOf<Pair<Uri, Boolean>>()
     private var cameraImageUri: Uri? = null
     private var compressionQuality = 80
 
     private val galleryLauncher = registerForActivityResult(
         ActivityResultContracts.GetMultipleContents()
     ) { uris ->
-        if (uris.isNotEmpty()) { selectedImages.addAll(uris); updateUI() }
+        uris.forEach { selectedItems.add(Pair(it, false)) }
+        updateUI()
+    }
+
+    private val pdfLauncher = registerForActivityResult(
+        ActivityResultContracts.GetMultipleContents()
+    ) { uris ->
+        uris.forEach { selectedItems.add(Pair(it, true)) }
+        updateUI()
     }
 
     private val cameraLauncher = registerForActivityResult(
         ActivityResultContracts.TakePicture()
     ) { success ->
-        if (success && cameraImageUri != null) { selectedImages.add(cameraImageUri!!); updateUI() }
+        if (success && cameraImageUri != null) {
+            selectedItems.add(Pair(cameraImageUri!!, false))
+            updateUI()
+        }
     }
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { perms ->
-        if (perms.values.all { it }) showImageSourceDialog()
+        if (perms.values.all { it }) showSourceDialog()
         else Toast.makeText(this, "Permissions required", Toast.LENGTH_LONG).show()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-        initViews(); setupRecyclerView(); setupListeners(); updateUI()
+        initViews()
+        setupRecyclerView()
+        setupListeners()
+        updateUI()
     }
 
     private fun initViews() {
@@ -82,8 +99,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupRecyclerView() {
-        imageAdapter = ImageAdapter(selectedImages) { pos ->
-            selectedImages.removeAt(pos); imageAdapter.notifyItemRemoved(pos); updateUI()
+        imageAdapter = ImageAdapter(selectedItems) { pos ->
+            selectedItems.removeAt(pos)
+            imageAdapter.notifyItemRemoved(pos)
+            updateUI()
         }
         recyclerView.layoutManager = GridLayoutManager(this, 3)
         recyclerView.adapter = imageAdapter
@@ -91,22 +110,39 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupListeners() {
         btnAddImages.setOnClickListener { checkPermissionsAndOpenPicker() }
+
         btnClearAll.setOnClickListener {
             AlertDialog.Builder(this).setTitle("Clear All")
-                .setMessage("Remove all images?")
-                .setPositiveButton("Clear") { _, _ -> selectedImages.clear(); imageAdapter.notifyDataSetChanged(); updateUI() }
+                .setMessage("Remove all files?")
+                .setPositiveButton("Clear") { _, _ ->
+                    selectedItems.clear()
+                    imageAdapter.notifyDataSetChanged()
+                    updateUI()
+                }
                 .setNegativeButton("Cancel", null).show()
         }
+
         btnConvert.setOnClickListener {
-            if (selectedImages.isEmpty()) { Toast.makeText(this, "Add at least one image", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
+            if (selectedItems.isEmpty()) {
+                Toast.makeText(this, "Add at least one file", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
             convertToTiff()
         }
+
         seekBarCompression.max = 100
         seekBarCompression.progress = compressionQuality
         seekBarCompression.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(s: SeekBar?, progress: Int, fromUser: Boolean) {
                 compressionQuality = progress
-                tvCompressionValue.text = "$progress% - ${when { progress >= 90 -> "Maximum Quality"; progress >= 70 -> "High Quality"; progress >= 50 -> "Medium Quality"; progress >= 30 -> "Low Quality"; else -> "Minimum Size" }}"
+                val label = when {
+                    progress >= 90 -> "Maximum Quality"
+                    progress >= 70 -> "High Quality"
+                    progress >= 50 -> "Medium Quality"
+                    progress >= 30 -> "Low Quality"
+                    else -> "Minimum Size"
+                }
+                tvCompressionValue.text = "$progress% ($label)"
             }
             override fun onStartTrackingTouch(s: SeekBar?) {}
             override fun onStopTrackingTouch(s: SeekBar?) {}
@@ -120,13 +156,17 @@ class MainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.S_V2 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED)
             needed.add(Manifest.permission.READ_EXTERNAL_STORAGE)
-        if (needed.isEmpty()) showImageSourceDialog() else permissionLauncher.launch(needed.toTypedArray())
+        if (needed.isEmpty()) showSourceDialog() else permissionLauncher.launch(needed.toTypedArray())
     }
 
-    private fun showImageSourceDialog() {
-        AlertDialog.Builder(this).setTitle("Add Images")
-            .setItems(arrayOf("📷  Camera", "🖼️  Gallery")) { _, which ->
-                if (which == 0) openCamera() else galleryLauncher.launch("image/*")
+    private fun showSourceDialog() {
+        AlertDialog.Builder(this).setTitle("Add Files")
+            .setItems(arrayOf("📷  Camera", "🖼️  Images from Gallery", "📄  PDF Files")) { _, which ->
+                when (which) {
+                    0 -> openCamera()
+                    1 -> galleryLauncher.launch("image/*")
+                    2 -> pdfLauncher.launch("application/pdf")
+                }
             }.show()
     }
 
@@ -137,8 +177,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateUI() {
-        val count = selectedImages.size
-        tvImageCount.text = if (count == 0) "No images selected" else "$count image${if (count > 1) "s" else ""} selected"
+        val count = selectedItems.size
+        val imgCount = selectedItems.count { !it.second }
+        val pdfCount = selectedItems.count { it.second }
+        tvImageCount.text = when {
+            count == 0 -> "No files selected"
+            pdfCount == 0 -> "$imgCount image${if (imgCount > 1) "s" else ""} selected"
+            imgCount == 0 -> "$pdfCount PDF${if (pdfCount > 1) "s" else ""} selected"
+            else -> "$imgCount image${if (imgCount > 1) "s" else ""} + $pdfCount PDF${if (pdfCount > 1) "s" else ""} selected"
+        }
         btnConvert.isEnabled = count > 0
         btnClearAll.visibility = if (count > 0) View.VISIBLE else View.GONE
         layoutCompressionOptions.visibility = if (count > 0) View.VISIBLE else View.GONE
@@ -146,36 +193,88 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun convertToTiff() {
-        setLoading(true, "Loading images...")
+        setLoading(true, "Preparing files...")
         Thread {
             try {
                 val bitmaps = mutableListOf<Bitmap>()
-                selectedImages.forEachIndexed { i, uri ->
-                    runOnUiThread { tvStatus.text = "Loading image ${i+1} of ${selectedImages.size}..."; progressBar.progress = (i.toFloat()/selectedImages.size*40).toInt() }
-                    val opts = BitmapFactory.Options().apply { inSampleSize = calcSampleSize(uri) }
-                    contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }?.let { bitmaps.add(it) }
+                val total = selectedItems.size
+
+                selectedItems.forEachIndexed { i, (uri, isPdf) ->
+                    runOnUiThread {
+                        tvStatus.text = "Processing file ${i + 1} of $total..."
+                        progressBar.progress = (i.toFloat() / total * 40).toInt()
+                    }
+                    if (isPdf) {
+                        bitmaps.addAll(renderPdfToBitmaps(uri))
+                    } else {
+                        val opts = BitmapFactory.Options().apply { inSampleSize = calcSampleSize(uri) }
+                        contentResolver.openInputStream(uri)?.use {
+                            BitmapFactory.decodeStream(it, null, opts)
+                        }?.let { bitmaps.add(it) }
+                    }
                 }
-                runOnUiThread { tvStatus.text = "Encoding TIFF..."; progressBar.progress = 50 }
-                val tiffData = TiffEncoder.encode(bitmaps, compressionQuality) { p -> runOnUiThread { progressBar.progress = 50 + p/2 } }
+
+                if (bitmaps.isEmpty()) {
+                    runOnUiThread { setLoading(false); Toast.makeText(this, "No pages could be read", Toast.LENGTH_LONG).show() }
+                    return@Thread
+                }
+
+                runOnUiThread { tvStatus.text = "Encoding TIFF (${bitmaps.size} pages)..."; progressBar.progress = 50 }
+                val tiffData = TiffEncoder.encode(bitmaps, compressionQuality) { p ->
+                    runOnUiThread { progressBar.progress = 50 + p / 2 }
+                }
+
                 runOnUiThread { tvStatus.text = "Saving..."; progressBar.progress = 95 }
                 val fileName = "tiff_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())}.tif"
                 val savedUri = saveFile(tiffData, fileName)
+                val pageCount = bitmaps.size
                 bitmaps.forEach { it.recycle() }
+
                 runOnUiThread {
-                    progressBar.progress = 100; setLoading(false)
-                    if (savedUri != null) showSuccess(savedUri, fileName, tiffData.size)
+                    progressBar.progress = 100
+                    setLoading(false)
+                    if (savedUri != null) showSuccess(savedUri, fileName, tiffData.size, pageCount)
                     else Toast.makeText(this, "Failed to save file", Toast.LENGTH_LONG).show()
                 }
             } catch (e: Exception) {
-                runOnUiThread { setLoading(false); Toast.makeText(this, "Error: ${e.message}", Toast.LENGTH_LONG).show() }
+                runOnUiThread {
+                    setLoading(false)
+                    Toast.makeText(this, "Error: ${e.message}", Toast.LENGTH_LONG).show()
+                }
             }
         }.start()
+    }
+
+    private fun renderPdfToBitmaps(uri: Uri): List<Bitmap> {
+        val bitmaps = mutableListOf<Bitmap>()
+        try {
+            val pfd = contentResolver.openFileDescriptor(uri, "r") ?: return bitmaps
+            val renderer = PdfRenderer(pfd)
+            for (i in 0 until renderer.pageCount) {
+                val page = renderer.openPage(i)
+                val scale = 2.0f
+                val width = (page.width * scale).toInt()
+                val height = (page.height * scale).toInt()
+                val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                bmp.eraseColor(Color.WHITE)
+                page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                bitmaps.add(bmp)
+                page.close()
+            }
+            renderer.close()
+            pfd.close()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return bitmaps
     }
 
     private fun calcSampleSize(uri: Uri): Int {
         val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
-        var s = 1; while (opts.outWidth/s > 2048 || opts.outHeight/s > 2048) s *= 2; return s
+        var s = 1
+        while (opts.outWidth / s > 2048 || opts.outHeight / s > 2048) s *= 2
+        return s
     }
 
     private fun saveFile(data: ByteArray, fileName: String): Uri? = try {
@@ -198,17 +297,26 @@ class MainActivity : AppCompatActivity() {
     private fun setLoading(loading: Boolean, msg: String = "") {
         progressBar.visibility = if (loading) View.VISIBLE else View.GONE
         tvStatus.visibility = if (loading) View.VISIBLE else View.GONE
-        tvStatus.text = msg; if (loading) progressBar.progress = 0
-        btnConvert.isEnabled = !loading; btnAddImages.isEnabled = !loading
-        btnClearAll.isEnabled = !loading; seekBarCompression.isEnabled = !loading
+        tvStatus.text = msg
+        if (loading) progressBar.progress = 0
+        btnConvert.isEnabled = !loading
+        btnAddImages.isEnabled = !loading
+        btnClearAll.isEnabled = !loading
+        seekBarCompression.isEnabled = !loading
     }
 
-    private fun showSuccess(uri: Uri, fileName: String, size: Int) {
-        val sizeStr = if (size/1024 > 1024) "%.1f MB".format(size/1024.0/1024.0) else "${size/1024} KB"
+    private fun showSuccess(uri: Uri, fileName: String, size: Int, pages: Int) {
+        val sizeStr = if (size / 1024 > 1024) "%.1f MB".format(size / 1024.0 / 1024.0) else "${size / 1024} KB"
         AlertDialog.Builder(this).setTitle("✅ Conversion Complete!")
-            .setMessage("File: $fileName\nSize: $sizeStr\nPages: ${selectedImages.size}\nSaved to: Downloads/TiffConverter/")
+            .setMessage("File: $fileName\nSize: $sizeStr\nPages: $pages\nSaved to: Downloads/TiffConverter/")
             .setPositiveButton("Share") { _, _ ->
-                startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type="image/tiff"; putExtra(Intent.EXTRA_STREAM, uri); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }, "Share TIFF"))
+                startActivity(Intent.createChooser(
+                    Intent(Intent.ACTION_SEND).apply {
+                        type = "image/tiff"
+                        putExtra(Intent.EXTRA_STREAM, uri)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }, "Share TIFF"
+                ))
             }
             .setNegativeButton("Done", null).show()
     }
