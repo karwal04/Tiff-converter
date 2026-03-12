@@ -11,7 +11,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.bumptech.glide.Glide
 
 class ImageAdapter(
-    private val images: MutableList<Uri>,
+    private val items: MutableList<Pair<Uri, Boolean>>,
     private val onRemove: (Int) -> Unit
 ) : RecyclerView.Adapter<ImageAdapter.VH>() {
 
@@ -25,10 +25,17 @@ class ImageAdapter(
         VH(LayoutInflater.from(parent.context).inflate(R.layout.item_image, parent, false))
 
     override fun onBindViewHolder(h: VH, pos: Int) {
-        h.page.text = "Page ${pos + 1}"
-        Glide.with(h.itemView).load(images[pos]).centerCrop().into(h.img)
+        val (uri, isPdf) = items[pos]
+        h.page.text = if (isPdf) "📄 PDF ${pos + 1}" else "🖼 Page ${pos + 1}"
+        if (isPdf) {
+            h.img.setImageResource(android.R.drawable.ic_menu_agenda)
+            h.img.setBackgroundColor(android.graphics.Color.parseColor("#E3F2FD"))
+        } else {
+            h.img.setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            Glide.with(h.itemView).load(uri).centerCrop().into(h.img)
+        }
         h.btn.setOnClickListener { val p = h.adapterPosition; if (p >= 0) onRemove(p) }
     }
 
-    override fun getItemCount() = images.size
+    override fun getItemCount() = items.size
 }
