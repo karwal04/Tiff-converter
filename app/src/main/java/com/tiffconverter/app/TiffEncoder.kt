@@ -17,18 +17,26 @@ object TiffEncoder {
         bitmaps.forEachIndexed { i, bmp ->
             onProgress((i.toFloat() / bitmaps.size * 80).toInt())
             pages.add(encodeImage(bmp, useCompression, quality))
-            widths.add(bmp.width); heights.add(bmp.height)
+            widths.add(bmp.width)
+            heights.add(bmp.height)
         }
 
         val numTags = 11
         val ifdSize = 2 + 12 * numTags + 4
         val extraPerIfd = 16
         val headerSize = 8
+
+        val imgOffsets = mutableListOf<Int>()
         var offset = headerSize + bitmaps.size * (ifdSize + extraPerIfd)
-        val imgOffsets = pages.map { o -> o.also { offset += it.size }; offset - it.size }
+        for (page in pages) {
+            imgOffsets.add(offset)
+            offset += page.size
+        }
 
         val hdr = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
-        hdr.putShort(0x4949); hdr.putShort(42); hdr.putInt(headerSize)
+        hdr.putShort(0x4949)
+        hdr.putShort(42)
+        hdr.putInt(headerSize)
         output.write(hdr.array())
 
         pages.forEachIndexed { idx, _ ->
@@ -50,11 +58,14 @@ object TiffEncoder {
             writeTag(buf, 282, 5, 1, extraOffset)
             writeTag(buf, 283, 5, 1, extraOffset + 8)
             buf.putInt(nextIfd)
-            buf.putInt(72); buf.putInt(1)
-            buf.putInt(72); buf.putInt(1)
+            buf.putInt(72)
+            buf.putInt(1)
+            buf.putInt(72)
+            buf.putInt(1)
             output.write(buf.array())
         }
-        pages.forEach { output.write(it) }
+
+        for (page in pages) output.write(page)
         onProgress(100)
         return output.toByteArray()
     }
@@ -72,17 +83,34 @@ object TiffEncoder {
             }
         }
         if (!compress) return rgb
-        val level = when { quality < 20 -> 9; quality < 40 -> 8; quality < 60 -> 6; quality < 80 -> 4; else -> 2 }
-        val deflater = java.util.zip.Deflater(level).apply { setInput(rgb); finish() }
+        val level = when {
+            quality < 20 -> 9
+            quality < 40 -> 8
+            quality < 60 -> 6
+            quality < 80 -> 4
+            else -> 2
+        }
+        val deflater = java.util.zip.Deflater(level)
+        deflater.setInput(rgb)
+        deflater.finish()
         val out = ByteArrayOutputStream(rgb.size)
         val buf = ByteArray(8192)
-        while (!deflater.finished()) out.write(buf, 0, deflater.deflate(buf))
+        while (!deflater.finished()) {
+            out.write(buf, 0, deflater.deflate(buf))
+        }
         deflater.end()
         return out.toByteArray()
     }
 
     private fun writeTag(buf: ByteBuffer, tag: Int, type: Int, count: Int, value: Int) {
-        buf.putShort(tag.toShort()); buf.putShort(type.toShort()); buf.putInt(count)
-        if (type == 3) { buf.putShort(value.toShort()); buf.putShort(0) } else buf.putInt(value)
+        buf.putShort(tag.toShort())
+        buf.putShort(type.toShort())
+        buf.putInt(count)
+        if (type == 3) {
+            buf.putShort(value.toShort())
+            buf.putShort(0)
+        } else {
+            buf.putInt(value)
+        }
     }
 }
